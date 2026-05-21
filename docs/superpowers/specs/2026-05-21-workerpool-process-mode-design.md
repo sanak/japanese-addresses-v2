@@ -309,3 +309,30 @@ npm test            # 既存テストが壊れていないこと（既存の 02 
 - sha256 一致率: 100%（diff 出力なし）
 
 `out/api_baseline/ja/京都府/*-地番.txt` と `out/api_workerpool/ja/京都府/*-地番.txt` を sha256 で比較した結果、全 36 ファイルがバイト単位で完全一致した。workerpool process モード実装は既存 Promise.race 実装と挙動同値であることを確認。
+
+### ベンチマーク（京都府、`/usr/bin/time -l`）
+
+実行環境: macOS（Darwin 25.5.0）、Node.js 22、cache 温まり状態。
+
+| 実装 | N | wall (real) | user | sys | maximum RSS |
+|---|---|---|---|---|---|
+| Promise.race | 4 | 39.08 s | 42.62 s | 1.35 s | 1,452 MB |
+| workerpool | 1 | 45.09 s | 49.49 s | 1.22 s | 1,255 MB |
+| workerpool | 2 | 31.02 s | 59.73 s | 2.19 s | 1,180 MB |
+| workerpool | 4 | **24.49 s** | 79.37 s | 4.54 s | 1,172 MB |
+| workerpool | 8 | 24.11 s | 119.92 s | 12.94 s | 1,078 MB |
+
+考察:
+
+- **wall time**: workerpool N=4 が Promise.race N=4 に対して **約 1.60x 高速**（39.08 → 24.49 秒）。CPU 並列化の効果が出ている
+- **スケーラビリティ**: N=4 と N=8 で wall time がほぼ同じ（24.49 vs 24.11 秒）。京都府スコープでは N=4 で CPU を頭打ち。N=8 では sys time が約 3 倍（4.54 → 12.94 秒）に増え、コンテキストスイッチのコストが目立つ
+- **メモリ**: workerpool 版の方が **maximum RSS が低い**（1,078-1,255 MB vs 1,452 MB）。これは当初予想と逆だった。理由は、各 worker が lg_code 単位の部分 Map しか保持しないのに対し、Promise.race 版では main プロセス内で並行実行中の全 city の中間状態（CSV ストリーム、Map、累積 chiban リスト等）が同時に滞留するため。worker 分離による「メモリ局所化」の効果が大きい
+- **起動コスト**: workerpool N=1 が Promise.race N=4 より遅い（45.09 vs 39.08 秒）のは想定通り。worker プロセスの fork + tsx 初期化 + IPC のオーバーヘッドが、並列化の利益が無い N=1 では純粋なコストとして見える
+- **CPU 効率**: user time の伸び方は N=1→2 で +20%、N=2→4 で +33%、N=4→8 で +51%。N が増えるほど IPC や tsx 初期化のオーバーヘッドが効いてくる
+
+### 採用判断のヒント
+
+- 全国スコープ（~1,700 市区町村）でも同様の傾向なら、wall time は workerpool N=4 で 1.5〜2x 短縮できる見込み
+- メモリ削減効果は実用上の追加価値。8GB heap 制限を超えそうな全国実行で安全側に振れる
+- 並列数は **N=4 が現実的な最適点**。N=8 にしても効果薄、N=2 だと半端
+- Promise.race 実装も残しておくと、再現可能性検証や CI 軽量化のためのフォールバックとして使える
