@@ -4,12 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import cliProgress from 'cli-progress';
+import workerpool from 'workerpool';
 
 import { getHubItemsByQuery, findResultByTypeAndArea, getAndParseCSVDataForId } from '../lib/hub.js';
 import { MachiAzaData } from '../lib/abr_data/machi_aza.js';
 import { processCity } from './04_make_chiban_lib.js';
 
 const CONCURRENCY = parseInt(process.env.CHIBAN_CONCURRENCY ?? '4', 10);
+const PARALLEL_MODE = process.env.CHIBAN_PARALLEL ?? '';
 
 async function runCitiesWithPromiseRace(
   machiAzas: MachiAzaData[],
@@ -32,6 +34,36 @@ async function runCitiesWithPromiseRace(
   await Promise.all(executing);
 }
 
+async function runCitiesWithWorkerpool(
+  machiAzas: MachiAzaData[],
+  machiAzaResultId: string,
+  outDir: string,
+  progress: cliProgress.SingleBar,
+): Promise<void> {
+  const workerPath = path.join(import.meta.dirname, '04_make_chiban_worker.ts');
+  const pool = workerpool.pool(workerPath, {
+    workerType: 'process',
+    maxWorkers: CONCURRENCY,
+    forkOpts: { execArgv: ['--import', 'tsx'] },
+  });
+  try {
+    await Promise.all(machiAzas.map(async (ma) => {
+      try {
+        await pool.exec('processCity', [{ ma, machiAzaResultId, outDir }]);
+      } catch (err) {
+        console.error(
+          `Failed to process ${ma.pref} ${ma.county}${ma.city}${ma.ward}:`,
+          err,
+        );
+      } finally {
+        progress.increment();
+      }
+    }));
+  } finally {
+    await pool.terminate(true);
+  }
+}
+
 async function main(argv: string[]) {
   const outDir = argv[2] || path.join(import.meta.dirname, '..', '..', 'out', 'api');
   fs.mkdirSync(outDir, { recursive: true });
@@ -42,7 +74,8 @@ async function main(argv: string[]) {
   if (!machiAzaResult) {
     throw new Error(`「全国 町字マスター」データセットが見つかりませんでした`);
   }
-  const machiAzaData = await getAndParseCSVDataForId<MachiAzaData>(machiAzaResult.properties.id);
+  const machiAzaResultId = machiAzaResult.properties.id;
+  const machiAzaData = await getAndParseCSVDataForId<MachiAzaData>(machiAzaResultId);
   const machiAzaDataByCode = new Map(machiAzaData.map((ma) => [
     `${ma.lg_code}|${ma.machiaza_id}`,
     ma
@@ -67,7 +100,13 @@ async function main(argv: string[]) {
   });
   progress.start(machiAzas.length, 0);
   try {
-    await runCitiesWithPromiseRace(machiAzas, machiAzaDataByCode, outDir, progress);
+    if (PARALLEL_MODE === 'workerpool') {
+      console.log(`並列モード: workerpool process (maxWorkers=${CONCURRENCY})`);
+      await runCitiesWithWorkerpool(machiAzas, machiAzaResultId, outDir, progress);
+    } else {
+      console.log(`並列モード: Promise.race (concurrency=${CONCURRENCY})`);
+      await runCitiesWithPromiseRace(machiAzas, machiAzaDataByCode, outDir, progress);
+    }
   } finally {
     progress.stop();
   }
