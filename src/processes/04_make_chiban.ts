@@ -11,6 +11,27 @@ import { processCity } from './04_make_chiban_lib.js';
 
 const CONCURRENCY = parseInt(process.env.CHIBAN_CONCURRENCY ?? '4', 10);
 
+async function runCitiesWithPromiseRace(
+  machiAzas: MachiAzaData[],
+  machiAzaDataByCode: Map<string, MachiAzaData>,
+  outDir: string,
+  progress: cliProgress.SingleBar,
+): Promise<void> {
+  const executing = new Set<Promise<void>>();
+  for (const ma of machiAzas) {
+    const p: Promise<void> = processCity(ma, machiAzaDataByCode, outDir)
+      .finally(() => {
+        executing.delete(p);
+        progress.increment();
+      });
+    executing.add(p);
+    if (executing.size >= CONCURRENCY) {
+      await Promise.race(executing);
+    }
+  }
+  await Promise.all(executing);
+}
+
 async function main(argv: string[]) {
   const outDir = argv[2] || path.join(import.meta.dirname, '..', '..', 'out', 'api');
   fs.mkdirSync(outDir, { recursive: true });
@@ -27,7 +48,6 @@ async function main(argv: string[]) {
     ma
   ]));
 
-  // One representative entry per lg_code, in encounter order.
   const seenLgCodes = new Set<string>();
   const machiAzas: MachiAzaData[] = [];
   for (const ma of machiAzaData) {
@@ -47,19 +67,7 @@ async function main(argv: string[]) {
   });
   progress.start(machiAzas.length, 0);
   try {
-    const executing = new Set<Promise<void>>();
-    for (const ma of machiAzas) {
-      const p: Promise<void> = processCity(ma, machiAzaDataByCode, outDir)
-        .finally(() => {
-          executing.delete(p);
-          progress.increment();
-        });
-      executing.add(p);
-      if (executing.size >= CONCURRENCY) {
-        await Promise.race(executing);
-      }
-    }
-    await Promise.all(executing);
+    await runCitiesWithPromiseRace(machiAzas, machiAzaDataByCode, outDir, progress);
   } finally {
     progress.stop();
   }
