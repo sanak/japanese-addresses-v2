@@ -143,10 +143,19 @@ function buildJoinSql(lg_code: string, hasPos: boolean): string {
     .map((k) => `l.${k} IS NOT DISTINCT FROM r.${k}`)
     .join(' AND ');
   const posCols = POS_COLS.map((c) => `r.${c}`).join(', ');
+  // ABR の parcel_pos CSV は同一 (lg_code, machiaza_id, prc_id) で
+  // 全列完全 identical な行が複数含まれることがある (北海道全域で 34 万行確認)。
+  // 単純な LEFT JOIN だと N 倍に展開される一方、Map fast-path の
+  // rightMap.set(key, data) は last-writer-wins で 1 行に潰すので
+  // 出力行数が一致しない。pos 側を ROW_NUMBER で 1 行に dedup して semantics を揃える。
+  const partitionCols = JOIN_KEYS.join(', ');
   return `
     SELECT l.*, ${posCols}
     FROM l_${lg_code} AS l
-    LEFT JOIN r_${lg_code} AS r ON ${onClause}
+    LEFT JOIN (
+      SELECT * FROM r_${lg_code}
+      QUALIFY ROW_NUMBER() OVER (PARTITION BY ${partitionCols}) = 1
+    ) AS r ON ${onClause}
     ORDER BY ${orderClause}
   `;
 }
