@@ -89,7 +89,11 @@ export async function* mergeJoinFromCsvDirs(
     const onClause = JOIN_KEYS
       .map((k) => `l.${k} IS NOT DISTINCT FROM r.${k}`)
       .join(' AND ');
-    const orderClause = JOIN_KEYS.map((k) => `l.${k}`).join(', ');
+    // SQLite 経路 (merge_sqlite.ts) は key カラムを文字列連結してから ORDER BY するため、
+    // 空フィールドは '' として他より小さい順序になる。DuckDB の multi-column ORDER BY 既定は
+    // NULLS LAST なので、何もしないと NULL を含む row が後ろに来てバイト同一性が崩れる。
+    // COALESCE で NULL を '' に正規化して、SQLite と同じ順序を再現する。
+    const orderClause = JOIN_KEYS.map((k) => `COALESCE(l.${k}, '')`).join(', ');
     const sql = `
       SELECT
         l.* REPLACE (${replaceClause}),
