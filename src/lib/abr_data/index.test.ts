@@ -57,6 +57,42 @@ for (const [name, mergeDataLeftJoin] of Object.entries(backends)) {
         { id: 3, name: 'Charlie' },
       ]);
     });
+
+    await test('empty left returns nothing', async () => {
+      const empty = (async function*(){})() as AsyncIterableIterator<{id: number}>;
+      const right = (async function*(){ yield { id: 1, age: 25 }; })();
+      const res = await Array.fromAsync(
+        mergeDataLeftJoin(empty, right, ['id'])
+      );
+      assert.deepStrictEqual(res, []);
+    });
+
+    await test('empty right yields left items unchanged', async () => {
+      const left = (async function*(){ yield { id: 1, name: 'Alice' }; })();
+      const empty = (async function*(){})() as AsyncIterableIterator<{id: number}>;
+      const res = await Array.fromAsync(
+        mergeDataLeftJoin(left, empty, ['id'])
+      );
+      assert.deepStrictEqual(res, [{ id: 1, name: 'Alice' }]);
+    });
+
+    await test('both empty returns nothing', async () => {
+      const e1 = (async function*(){})() as AsyncIterableIterator<{id: number}>;
+      const e2 = (async function*(){})() as AsyncIterableIterator<{id: number}>;
+      const res = await Array.fromAsync(
+        mergeDataLeftJoin(e1, e2, ['id'])
+      );
+      assert.deepStrictEqual(res, []);
+    });
+
+    await test('right key value overrides left key value', async () => {
+      const left = (async function*(){ yield { id: 1, status: 'pending' }; })();
+      const right = (async function*(){ yield { id: 1, status: 'active', age: 25 }; })();
+      const res = await Array.fromAsync(
+        mergeDataLeftJoin(left, right, ['id'])
+      );
+      assert.deepStrictEqual(res, [{ id: 1, status: 'active', age: 25 }]);
+    });
   });
 }
 
