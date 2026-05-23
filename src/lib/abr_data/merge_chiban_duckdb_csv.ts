@@ -77,10 +77,10 @@ function extractLgCodeFromHubResult(
 ): string {
   const url = getUrlForCSVResource(hubResult);
   if (!url) throw new Error(`mergeChibanDataDuckdbCsv: no CSV URL on HubSearchResult`);
-  const m = /(\d{6})_csv_zip$/.exec(url);
+  const m = /_city(\d{6})\.csv\.zip$/.exec(url);
   if (!m) {
     throw new Error(
-      `mergeChibanDataDuckdbCsv: cannot extract lg_code from URL "${url}" (expected /(\\d{6})_csv_zip$/) — check lg_code`,
+      `mergeChibanDataDuckdbCsv: cannot extract lg_code from URL "${url}" (expected /_city(\\d{6})\\.csv\\.zip$/) — check lg_code`,
     );
   }
   if (!/^[0-9]+$/.test(m[1])) {

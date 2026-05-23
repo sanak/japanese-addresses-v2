@@ -149,8 +149,8 @@ async function withCtx<T>(
 
 await describe('mergeChibanDataDuckdbCsv (percity)', async () => {
   await test('basic LEFT JOIN with pos: 3 main + 2 pos, miss row has rep_lat=null', async () => {
-    const mainUrl = 'https://example.test/011002_csv_zip';
-    const posUrl  = 'https://example.test/011002_pos_csv_zip';
+    const mainUrl = 'https://example.test/mt_parcel/city/mt_parcel_city011002.csv.zip';
+    const posUrl  = 'https://example.test/mt_parcel_pos/city/mt_parcel_pos_city011002.csv.zip';
     const rows = await withCachedZipFixture(
       [
         { url: mainUrl, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
@@ -172,7 +172,7 @@ await describe('mergeChibanDataDuckdbCsv (percity)', async () => {
   });
 
   await test('no-pos city: all main rows yield with rep_lat=null', async () => {
-    const mainUrl = 'https://example.test/131059_csv_zip';
+    const mainUrl = 'https://example.test/mt_parcel/city/mt_parcel_city131059.csv.zip';
     const rows = await withCachedZipFixture(
       [{ url: mainUrl, fixturePath: path.join(FIXTURE_ROOT, 'main-nopos.zip') }],
       async () => withCtx('percity', async (ctx) => Array.fromAsync(
@@ -191,8 +191,8 @@ await describe('mergeChibanDataDuckdbCsv (percity)', async () => {
   });
 
   await test('ORDER BY (lg_code, machiaza_id, prc_id) is stable across runs', async () => {
-    const mainUrl = 'https://example.test/011002_csv_zip';
-    const posUrl  = 'https://example.test/011002_pos_csv_zip';
+    const mainUrl = 'https://example.test/mt_parcel/city/mt_parcel_city011002.csv.zip';
+    const posUrl  = 'https://example.test/mt_parcel_pos/city/mt_parcel_pos_city011002.csv.zip';
     const run = () => withCachedZipFixture(
       [
         { url: mainUrl, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
@@ -231,8 +231,8 @@ await describe('mergeChibanDataDuckdbCsv (percity)', async () => {
   });
 
   await test('cleans up city-<lg_code>/db-<lg_code> after iteration ends', async () => {
-    const mainUrl = 'https://example.test/011002_csv_zip';
-    const posUrl  = 'https://example.test/011002_pos_csv_zip';
+    const mainUrl = 'https://example.test/mt_parcel/city/mt_parcel_city011002.csv.zip';
+    const posUrl  = 'https://example.test/mt_parcel_pos/city/mt_parcel_pos_city011002.csv.zip';
     await withCachedZipFixture(
       [
         { url: mainUrl, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
@@ -258,8 +258,8 @@ await describe('mergeChibanDataDuckdbCsv (percity)', async () => {
     // CHIBAN_CONCURRENCY=0 で configureDuckdbConnection が throw する。
     // この時点で db-<lg_code>/ と city-<lg_code>/ は作成済みなので、percity 分岐の
     // catch 節で片付けないと ctx.tempRoot に残ってしまう。
-    const mainUrl = 'https://example.test/011002_csv_zip';
-    const posUrl  = 'https://example.test/011002_pos_csv_zip';
+    const mainUrl = 'https://example.test/mt_parcel/city/mt_parcel_city011002.csv.zip';
+    const posUrl  = 'https://example.test/mt_parcel_pos/city/mt_parcel_pos_city011002.csv.zip';
     await withCachedZipFixture(
       [
         { url: mainUrl, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
@@ -292,9 +292,9 @@ await describe('mergeChibanDataDuckdbCsv (percity)', async () => {
 
 await describe('mergeChibanDataDuckdbCsv (shared)', async () => {
   await test('sequential 2 cities on same shared ctx: both yield correct rows', async () => {
-    const mainUrl1 = 'https://example.test/011002_csv_zip';
-    const posUrl1  = 'https://example.test/011002_pos_csv_zip';
-    const mainUrl2 = 'https://example.test/131059_csv_zip';
+    const mainUrl1 = 'https://example.test/mt_parcel/city/mt_parcel_city011002.csv.zip';
+    const posUrl1  = 'https://example.test/mt_parcel_pos/city/mt_parcel_pos_city011002.csv.zip';
+    const mainUrl2 = 'https://example.test/mt_parcel/city/mt_parcel_city131059.csv.zip';
     const rows1: unknown[] = [];
     const rows2: unknown[] = [];
     await withCachedZipFixture(
@@ -317,9 +317,9 @@ await describe('mergeChibanDataDuckdbCsv (shared)', async () => {
   });
 
   await test('parallel 2 cities on same shared ctx: both yield correct rows', async () => {
-    const mainUrl1 = 'https://example.test/011002_csv_zip';
-    const posUrl1  = 'https://example.test/011002_pos_csv_zip';
-    const mainUrl2 = 'https://example.test/131059_csv_zip';
+    const mainUrl1 = 'https://example.test/mt_parcel/city/mt_parcel_city011002.csv.zip';
+    const posUrl1  = 'https://example.test/mt_parcel_pos/city/mt_parcel_pos_city011002.csv.zip';
+    const mainUrl2 = 'https://example.test/mt_parcel/city/mt_parcel_city131059.csv.zip';
     let rows1: unknown[] = [];
     let rows2: unknown[] = [];
     await withCachedZipFixture(
@@ -344,8 +344,8 @@ await describe('mergeChibanDataDuckdbCsv (shared)', async () => {
   });
 
   await test('shared: city-<lg_code> temp persists until closeChibanDuckdbCtx', async () => {
-    const mainUrl = 'https://example.test/011002_csv_zip';
-    const posUrl  = 'https://example.test/011002_pos_csv_zip';
+    const mainUrl = 'https://example.test/mt_parcel/city/mt_parcel_city011002.csv.zip';
+    const posUrl  = 'https://example.test/mt_parcel_pos/city/mt_parcel_pos_city011002.csv.zip';
     let tempRoot = '';
     await withCachedZipFixture(
       [
