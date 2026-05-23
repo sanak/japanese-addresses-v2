@@ -1,8 +1,15 @@
 import assert from 'node:assert';
 import test, { describe } from 'node:test';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 
-import { buildLgCodeWhereClause, mergeJoinFromCsvDirs } from './merge_duckdb_csv.js';
+import {
+  buildLgCodeWhereClause,
+  mergeJoinFromCsvDirs,
+  mergeRsdtdspRsdtDataDuckdbCsv,
+} from './merge_duckdb_csv.js';
+import type { HubSearchResult } from '../hub.js';
 
 const FIXTURE_ROOT = path.join(
   import.meta.dirname, '..', '..', '..', 'test', 'fixtures', 'lib', 'abr_data', 'merge_duckdb_csv',
@@ -85,5 +92,85 @@ await describe('mergeJoinFromCsvDirs', async () => {
     );
     const sorted = [...keys].sort();
     assert.deepStrictEqual(keys, sorted);
+  });
+});
+
+async function withCachedZipFixture<T>(
+  zips: { url: string; fixturePath: string }[],
+  fn: () => Promise<T>,
+): Promise<T> {
+  const cacheRoot = await fs.mkdtemp(
+    path.join(os.tmpdir(), 'mergeRsdtdspDuckdbCsv-cache-'),
+  );
+  const prevCacheDir = process.env.CACHE_DIR;
+  process.env.CACHE_DIR = cacheRoot;
+  try {
+    await fs.mkdir(path.join(cacheRoot, 'files'), { recursive: true });
+    for (const { url, fixturePath } of zips) {
+      const cacheKey = url.replace(/[^a-zA-Z0-9]/g, '_');
+      await fs.copyFile(fixturePath, path.join(cacheRoot, 'files', cacheKey));
+    }
+    return await fn();
+  } finally {
+    if (prevCacheDir === undefined) delete process.env.CACHE_DIR;
+    else process.env.CACHE_DIR = prevCacheDir;
+    await fs.rm(cacheRoot, { recursive: true, force: true });
+  }
+}
+
+function makeHubResult(url: string): HubSearchResult {
+  return {
+    type: 'Feature',
+    geometry: null,
+    properties: { id: 'stub', title: 'stub', url },
+  } as unknown as HubSearchResult;
+}
+
+await describe('mergeRsdtdspRsdtDataDuckdbCsv', async () => {
+  await test('joins main and pos via Hub URLs, yields RsdtdspRsdtDataWithPos shape', async () => {
+    const mainUrl = 'https://example.test/main.zip';
+    const posUrl  = 'https://example.test/pos.zip';
+    const rows = await withCachedZipFixture(
+      [
+        { url: mainUrl, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
+        { url: posUrl,  fixturePath: path.join(FIXTURE_ROOT, 'pos.zip') },
+      ],
+      async () => Array.fromAsync(
+        mergeRsdtdspRsdtDataDuckdbCsv(
+          [makeHubResult(mainUrl)],
+          [makeHubResult(posUrl)],
+        ),
+      ),
+    );
+    assert.strictEqual(rows.length, 4);
+    const hit = rows.find((r) => r.lg_code === '011002' && r.rsdt_id === '001');
+    assert.strictEqual(hit?.rsdt_addr_flg, '9');
+    assert.strictEqual((hit as { rep_lat?: string | null })?.rep_lat, '43.0');
+  });
+
+  await test('cleans up temp dir even when consumer breaks early', async () => {
+    const mainUrl = 'https://example.test/main2.zip';
+    const posUrl  = 'https://example.test/pos2.zip';
+    const tmpBefore = await fs.readdir(os.tmpdir());
+    const merged = await withCachedZipFixture(
+      [
+        { url: mainUrl, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
+        { url: posUrl,  fixturePath: path.join(FIXTURE_ROOT, 'pos.zip') },
+      ],
+      async () => {
+        const iter = mergeRsdtdspRsdtDataDuckdbCsv(
+          [makeHubResult(mainUrl)],
+          [makeHubResult(posUrl)],
+        );
+        for await (const _ of iter) { void _; break; }
+        return true;
+      },
+    );
+    assert.strictEqual(merged, true);
+    const tmpAfter = await fs.readdir(os.tmpdir());
+    const stragglers = tmpAfter
+      .filter((n) => n.startsWith('merge-rsdt-duckdb-csv-') || n.startsWith('merge-duckdb-csv-'))
+      .filter((n) => !tmpBefore.includes(n));
+    assert.deepStrictEqual(stragglers, []);
   });
 });

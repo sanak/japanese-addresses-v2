@@ -3,6 +3,12 @@ import os from 'node:os';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import { getDownloadStream } from '../fetch_tools.js';
+import { getUrlForCSVResource, type HubSearchResult } from '../hub.js';
+import { loadSettings } from '../settings.js';
+import { unzipToFiles } from '../zip_tools.js';
+import type { RsdtdspRsdtDataWithPos } from './rsdtdsp_rsdt.js';
+
 /**
  * settings.lgCodes (RegExp[]) を DuckDB SQL の WHERE 断片に変換する純関数。
  * 空配列なら undefined を返し、呼び出し側で WHERE 句自体を省略させる。
@@ -105,6 +111,54 @@ export async function* mergeJoinFromCsvDirs(
     try { instance?.closeSync(); }   catch { /* ignore */ }
     await fs.rm(dbDir, { recursive: true, force: true }).catch((e: unknown) => {
       console.warn(`merge_duckdb_csv: temp cleanup failed: ${dbDir}`, e);
+    });
+  }
+}
+
+async function extractGroupToTemp(
+  hubResults: HubSearchResult[],
+  subDir: string,
+  rootDir: string,
+): Promise<string> {
+  const outDir = path.join(rootDir, subDir);
+  await fs.mkdir(outDir, { recursive: true });
+  await Promise.all(hubResults.map(async (res, i) => {
+    const url = getUrlForCSVResource(res);
+    if (!url) throw new Error(`mergeRsdtdspRsdtDataDuckdbCsv: no CSV URL on HubSearchResult #${i}`);
+    const buffer = await getDownloadStream(url);
+    // unzipToFiles は同一 outDir に複数 ZIP を展開しても衝突回避するので
+    // 並列で同じ outDir に書き込んで問題ない (ファイル名連番化で de-collide)。
+    await unzipToFiles(buffer, outDir);
+  }));
+  return outDir;
+}
+
+/**
+ * main/pos の HubSearchResult 配列を受け、ZIP を temp に展開して
+ * mergeJoinFromCsvDirs にディレクトリパスを渡す。終了時に temp を削除する。
+ */
+export async function* mergeRsdtdspRsdtDataDuckdbCsv(
+  mainHubResults: HubSearchResult[],
+  posHubResults:  HubSearchResult[],
+): AsyncIterableIterator<RsdtdspRsdtDataWithPos> {
+  const settings = await loadSettings();
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'merge-rsdt-duckdb-csv-'));
+  try {
+    const [mainDir, posDir] = await Promise.all([
+      extractGroupToTemp(mainHubResults, 'main', tempRoot),
+      extractGroupToTemp(posHubResults,  'pos',  tempRoot),
+    ]);
+    for await (const row of mergeJoinFromCsvDirs({
+      mainDir,
+      posDir,
+      lgCodePatterns: settings.lgCodes,
+      tempRoot,
+    })) {
+      yield row as unknown as RsdtdspRsdtDataWithPos;
+    }
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true }).catch((e: unknown) => {
+      console.warn(`mergeRsdtdspRsdtDataDuckdbCsv: temp cleanup failed: ${tempRoot}`, e);
     });
   }
 }
