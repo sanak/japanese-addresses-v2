@@ -187,14 +187,24 @@ export async function* mergeChibanDataDuckdbCsv(
     await fs.mkdir(perCityDbDir, { recursive: true });
     const spillDir = path.join(perCityDbDir, 'duckdb-spill');
     await fs.mkdir(spillDir, { recursive: true });
-    perCityInstance = await DuckDBInstance.create(path.join(perCityDbDir, 'db.duckdb'));
-    const setup = await perCityInstance.connect();
+    // 初期化途中で throw した場合、本体 try { ... } finally { ... } に入る前なので
+    // 外側 finally で perCityInstance/perCityDbDir/cityRoot を片付けてもらえない。
+    // ここで明示的に rollback する。
     try {
-      await configureDuckdbConnection(setup, spillDir);
-    } finally {
-      setup.closeSync();
+      perCityInstance = await DuckDBInstance.create(path.join(perCityDbDir, 'db.duckdb'));
+      const setup = await perCityInstance.connect();
+      try {
+        await configureDuckdbConnection(setup, spillDir);
+      } finally {
+        setup.closeSync();
+      }
+      instanceToUse = perCityInstance;
+    } catch (e) {
+      try { perCityInstance?.closeSync(); } catch { /* ignore */ }
+      await fs.rm(perCityDbDir, { recursive: true, force: true }).catch(() => { /* ignore */ });
+      await fs.rm(cityRoot, { recursive: true, force: true }).catch(() => { /* ignore */ });
+      throw e;
     }
-    instanceToUse = perCityInstance;
   }
 
   let connection: DuckDBConnection | undefined;

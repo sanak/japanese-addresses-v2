@@ -253,6 +253,41 @@ await describe('mergeChibanDataDuckdbCsv (percity)', async () => {
       }),
     );
   });
+
+  await test('cleans up instance/dbDir/cityRoot on init failure (no merge leak)', async () => {
+    // CHIBAN_CONCURRENCY=0 で configureDuckdbConnection が throw する。
+    // この時点で db-<lg_code>/ と city-<lg_code>/ は作成済みなので、percity 分岐の
+    // catch 節で片付けないと ctx.tempRoot に残ってしまう。
+    const mainUrl = 'https://example.test/011002_csv_zip';
+    const posUrl  = 'https://example.test/011002_pos_csv_zip';
+    await withCachedZipFixture(
+      [
+        { url: mainUrl, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
+        { url: posUrl,  fixturePath: path.join(FIXTURE_ROOT, 'pos.zip') },
+      ],
+      async () => withCtx('percity', async (ctx) => {
+        const before = await fs.readdir(ctx.tempRoot);
+        const prev = process.env.CHIBAN_CONCURRENCY;
+        process.env.CHIBAN_CONCURRENCY = '0';
+        try {
+          await assert.rejects(
+            () => Array.fromAsync(mergeChibanDataDuckdbCsv(
+              makeHubResult(mainUrl, '011002'),
+              makeHubResult(posUrl,  '011002'),
+              ctx,
+            )),
+            /Infinity|INT64|threads/,
+          );
+        } finally {
+          if (prev === undefined) delete process.env.CHIBAN_CONCURRENCY;
+          else process.env.CHIBAN_CONCURRENCY = prev;
+        }
+        const after = await fs.readdir(ctx.tempRoot);
+        const leaked = after.filter((n) => !before.includes(n));
+        assert.deepStrictEqual(leaked, [], `leaked entries under ctx.tempRoot: ${leaked.join(', ')}`);
+      }),
+    );
+  });
 });
 
 await describe('mergeChibanDataDuckdbCsv (shared)', async () => {
