@@ -35,14 +35,23 @@ export async function createChibanDuckdbCtx(
   const dbPath = path.join(tempRoot, 'db.duckdb');
   const spillDir = path.join(tempRoot, 'duckdb-spill');
   await fs.mkdir(spillDir, { recursive: true });
-  const instance = await DuckDBInstance.create(dbPath);
-  const setup = await instance.connect();
+  // 初期化途中で throw した場合、呼び出し側は ctx を受け取らないため
+  // closeChibanDuckdbCtx を呼べない。ここで instance / tempRoot を片付ける。
+  let instance: DuckDBInstance | undefined;
   try {
-    await configureDuckdbConnection(setup, spillDir);
-  } finally {
-    setup.closeSync();
+    instance = await DuckDBInstance.create(dbPath);
+    const setup = await instance.connect();
+    try {
+      await configureDuckdbConnection(setup, spillDir);
+    } finally {
+      setup.closeSync();
+    }
+    return { lifecycle, instance, tempRoot };
+  } catch (e) {
+    try { instance?.closeSync(); } catch { /* ignore */ }
+    await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => { /* ignore */ });
+    throw e;
   }
-  return { lifecycle, instance, tempRoot };
 }
 
 /**

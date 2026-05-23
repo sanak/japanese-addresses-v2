@@ -69,6 +69,26 @@ await describe('createChibanDuckdbCtx (shared)', async () => {
     assert.strictEqual(ctx.instance, undefined); // close 後は nulled out
     await assert.rejects(() => fs.stat(tempRoot), /ENOENT/);
   });
+
+  await test('cleans up instance and tempRoot on init failure (no ctx leak)', async () => {
+    // CHIBAN_CONCURRENCY=0 を仕掛けると threads = Math.floor(cores/0) = Infinity となり、
+    // configureDuckdbConnection 内の `SET threads = Infinity` で DuckDB が throw する。
+    // この時点で DuckDBInstance.create は成功しているので、catch 節で instance と
+    // tempRoot を片付けないと leak する。
+    const prev = process.env.CHIBAN_CONCURRENCY;
+    process.env.CHIBAN_CONCURRENCY = '0';
+    const before = (await fs.readdir(os.tmpdir())).filter((n) => n.startsWith('chiban-duckdb-csv-'));
+    try {
+      await assert.rejects(() => createChibanDuckdbCtx('shared'), /Infinity|INT64|threads/);
+    } finally {
+      if (prev === undefined) delete process.env.CHIBAN_CONCURRENCY;
+      else process.env.CHIBAN_CONCURRENCY = prev;
+    }
+    const after = (await fs.readdir(os.tmpdir())).filter((n) => n.startsWith('chiban-duckdb-csv-'));
+    // before に無く after に有る = leak。leak が無いことを確認する。
+    const leaked = after.filter((n) => !before.includes(n));
+    assert.deepStrictEqual(leaked, [], `leaked tempRoot(s): ${leaked.join(', ')}`);
+  });
 });
 
 await describe('closeChibanDuckdbCtx (percity)', async () => {
