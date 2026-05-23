@@ -1,10 +1,16 @@
 import assert from 'node:assert';
 import test, { describe } from 'node:test';
 
-import * as index from './index.js';
+import { mergeDataLeftJoinSqlite } from './merge_sqlite.js';
+import { mergeDataLeftJoinDuckdb } from './merge_duckdb.js';
 
-await describe('abr_data/index', async () => {
-  await describe('joinAsyncIterators', async () => {
+const backends = {
+  sqlite: mergeDataLeftJoinSqlite,
+  duckdb: mergeDataLeftJoinDuckdb,
+} as const;
+
+for (const [name, mergeDataLeftJoin] of Object.entries(backends)) {
+  await describe(`mergeDataLeftJoin [${name}]`, async () => {
     await test('it correctly joins two async iterators when they are ordered', async () => {
       const one = async function*(){
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -22,7 +28,7 @@ await describe('abr_data/index', async () => {
       };
 
       const res = await Array.fromAsync(
-        index.mergeDataLeftJoin(one(), two(), ['id'])
+        mergeDataLeftJoin(one(), two(), ['id'])
       );
 
       assert.deepStrictEqual(res, [
@@ -42,7 +48,7 @@ await describe('abr_data/index', async () => {
       };
 
       const res = await Array.fromAsync(
-        index.mergeDataLeftJoin(one(), two(), ['id'])
+        mergeDataLeftJoin(one(), two(), ['id'])
       );
 
       assert.deepStrictEqual(res, [
@@ -52,4 +58,4 @@ await describe('abr_data/index', async () => {
       ]);
     });
   });
-});
+}
