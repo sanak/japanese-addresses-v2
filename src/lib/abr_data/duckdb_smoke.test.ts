@@ -22,7 +22,7 @@ await describe('@duckdb/node-api smoke', async () => {
     );
     await reader.readAll();
     const rows = reader.getRowObjects();
-    const merged = JSON.parse(rows[0].merged as string);
+    const merged = JSON.parse(rows[0].merged as string) as { a: number; b: number; c: number };
     assert.strictEqual(merged.a, 1);
     assert.strictEqual(merged.b, 3);
     assert.strictEqual(merged.c, 4);

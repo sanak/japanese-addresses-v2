@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/require-await */
 import assert from 'node:assert';
 import test, { describe } from 'node:test';
 
