@@ -10,8 +10,15 @@ import { machiAzaName, SingleChiban, SingleMachiAza } from '../data.js';
 import { projectABRData } from '../lib/proj.js';
 import { MachiAzaData } from '../lib/abr_data/machi_aza.js';
 import { rawToMachiAza } from './02_machi_aza.js';
-import { ChibanData, ChibanPosData } from '../lib/abr_data/chiban.js';
+import { ChibanData, ChibanPosData, type ChibanDataWithPos } from '../lib/abr_data/chiban.js';
 import { mergeDataLeftJoin } from '../lib/abr_data/index.js';
+import {
+  createChibanDuckdbCtx,
+  closeChibanDuckdbCtx,
+  mergeChibanDataDuckdbCsv,
+  type ChibanDuckdbCtx,
+  type ChibanDuckdbLifecycle,
+} from '../lib/abr_data/merge_chiban_duckdb_csv.js';
 
 const HEADER_CHUNK_SIZE = 50_000;
 const CONCURRENCY = parseInt(process.env.CHIBAN_CONCURRENCY ?? '4', 10);
@@ -92,10 +99,15 @@ async function outputChibanData(outDir: string, outFilename: string, apiData: Ch
   console.log(`${outFilename}: ${apiData.length.toString(10).padEnd(4, ' ')} 件の町字の地番を出力した`);
 }
 
+function hasPos(raw: ChibanDataWithPos): raw is ChibanData & ChibanPosData {
+  return (raw as Partial<ChibanPosData>).rep_srid != null;
+}
+
 async function processCity(
   ma: MachiAzaData,
   machiAzaDataByCode: Map<string, MachiAzaData>,
   outDir: string,
+  ctx: ChibanDuckdbCtx | undefined,
 ): Promise<void> {
   let area = `${ma.pref} ${ma.county}${ma.city}`;
   if (ma.ward !== '') {
@@ -110,14 +122,18 @@ async function processCity(
     return;
   }
 
-  const mainStream = getAndStreamCSVDataForId<ChibanData>(chibanDataRef.properties.id);
-  const posStream = chibanPosDataRef ?
-    getAndStreamCSVDataForId<ChibanPosData>(chibanPosDataRef.properties.id)
-    :
-    // 位置参照拡張データが無い場合もある
-    (async function*() {})();
-
-  const rawData = mergeDataLeftJoin(mainStream, posStream, ['lg_code', 'machiaza_id', 'prc_id'], true);
+  let rawData: AsyncIterableIterator<ChibanDataWithPos>;
+  if (ctx) {
+    rawData = mergeChibanDataDuckdbCsv(chibanDataRef, chibanPosDataRef, ctx);
+  } else {
+    const mainStream = getAndStreamCSVDataForId<ChibanData>(chibanDataRef.properties.id);
+    const posStream = chibanPosDataRef ?
+      getAndStreamCSVDataForId<ChibanPosData>(chibanPosDataRef.properties.id)
+      :
+      // 位置参照拡張データが無い場合もある
+      (async function*() {})();
+    rawData = mergeDataLeftJoin(mainStream, posStream, ['lg_code', 'machiaza_id', 'prc_id'], true) as AsyncIterableIterator<ChibanDataWithPos>;
+  }
 
   let currentMachiAza: MachiAzaData | undefined = undefined;
   const apiData: ChibanApi = [];
@@ -143,7 +159,7 @@ async function processCity(
       prc_num1: raw.prc_num1,
       prc_num2: raw.prc_num2 !== '' ? raw.prc_num2 : undefined,
       prc_num3: raw.prc_num3 !== '' ? raw.prc_num3 : undefined,
-      point: 'rep_srid' in raw ? projectABRData(raw) : undefined,
+      point: hasPos(raw) ? projectABRData(raw) : undefined,
     });
   }
   if (currentMachiAza && currentChibanList.length > 0) {
@@ -184,6 +200,13 @@ async function main(argv: string[]) {
   }
   console.log('事前準備: 町字データを取得しました');
 
+  let ctx: ChibanDuckdbCtx | undefined;
+  if (process.env.MERGE_BACKEND === 'duckdb-csv') {
+    const lifecycle = (process.env.CHIBAN_DUCKDB_LIFECYCLE ?? 'shared') as ChibanDuckdbLifecycle;
+    ctx = await createChibanDuckdbCtx(lifecycle);
+    console.log(`MERGE_BACKEND=duckdb-csv with CHIBAN_DUCKDB_LIFECYCLE=${lifecycle}`);
+  }
+
   const progress = new cliProgress.SingleBar({
     format: ' {bar} {percentage}% | ETA: {eta_formatted} | {value}/{total}',
     barCompleteChar: '█',
@@ -197,7 +220,7 @@ async function main(argv: string[]) {
   try {
     const executing = new Set<Promise<void>>();
     for (const ma of machiAzas) {
-      const p: Promise<void> = processCity(ma, machiAzaDataByCode, outDir)
+      const p: Promise<void> = processCity(ma, machiAzaDataByCode, outDir, ctx)
         .finally(() => {
           executing.delete(p);
           progress.increment();
@@ -210,6 +233,7 @@ async function main(argv: string[]) {
     await Promise.all(executing);
   } finally {
     progress.stop();
+    if (ctx) await closeChibanDuckdbCtx(ctx);
   }
 }
 
