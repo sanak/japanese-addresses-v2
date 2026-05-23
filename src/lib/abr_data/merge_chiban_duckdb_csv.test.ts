@@ -254,3 +254,86 @@ await describe('mergeChibanDataDuckdbCsv (percity)', async () => {
     );
   });
 });
+
+await describe('mergeChibanDataDuckdbCsv (shared)', async () => {
+  await test('sequential 2 cities on same shared ctx: both yield correct rows', async () => {
+    const mainUrl1 = 'https://example.test/011002_csv_zip';
+    const posUrl1  = 'https://example.test/011002_pos_csv_zip';
+    const mainUrl2 = 'https://example.test/131059_csv_zip';
+    const rows1: unknown[] = [];
+    const rows2: unknown[] = [];
+    await withCachedZipFixture(
+      [
+        { url: mainUrl1, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
+        { url: posUrl1,  fixturePath: path.join(FIXTURE_ROOT, 'pos.zip') },
+        { url: mainUrl2, fixturePath: path.join(FIXTURE_ROOT, 'main-nopos.zip') },
+      ],
+      async () => withCtx('shared', async (ctx) => {
+        for await (const r of mergeChibanDataDuckdbCsv(
+          makeHubResult(mainUrl1, '011002'), makeHubResult(posUrl1, '011002'), ctx,
+        )) rows1.push(r);
+        for await (const r of mergeChibanDataDuckdbCsv(
+          makeHubResult(mainUrl2, '131059'), undefined, ctx,
+        )) rows2.push(r);
+      }),
+    );
+    assert.strictEqual(rows1.length, 3);
+    assert.strictEqual(rows2.length, 2);
+  });
+
+  await test('parallel 2 cities on same shared ctx: both yield correct rows', async () => {
+    const mainUrl1 = 'https://example.test/011002_csv_zip';
+    const posUrl1  = 'https://example.test/011002_pos_csv_zip';
+    const mainUrl2 = 'https://example.test/131059_csv_zip';
+    let rows1: unknown[] = [];
+    let rows2: unknown[] = [];
+    await withCachedZipFixture(
+      [
+        { url: mainUrl1, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
+        { url: posUrl1,  fixturePath: path.join(FIXTURE_ROOT, 'pos.zip') },
+        { url: mainUrl2, fixturePath: path.join(FIXTURE_ROOT, 'main-nopos.zip') },
+      ],
+      async () => withCtx('shared', async (ctx) => {
+        [rows1, rows2] = await Promise.all([
+          Array.fromAsync(mergeChibanDataDuckdbCsv(
+            makeHubResult(mainUrl1, '011002'), makeHubResult(posUrl1, '011002'), ctx,
+          )),
+          Array.fromAsync(mergeChibanDataDuckdbCsv(
+            makeHubResult(mainUrl2, '131059'), undefined, ctx,
+          )),
+        ]);
+      }),
+    );
+    assert.strictEqual(rows1.length, 3);
+    assert.strictEqual(rows2.length, 2);
+  });
+
+  await test('shared: city-<lg_code> temp persists until closeChibanDuckdbCtx', async () => {
+    const mainUrl = 'https://example.test/011002_csv_zip';
+    const posUrl  = 'https://example.test/011002_pos_csv_zip';
+    let tempRoot = '';
+    await withCachedZipFixture(
+      [
+        { url: mainUrl, fixturePath: path.join(FIXTURE_ROOT, 'main.zip') },
+        { url: posUrl,  fixturePath: path.join(FIXTURE_ROOT, 'pos.zip') },
+      ],
+      async () => {
+        const ctx = await createChibanDuckdbCtx('shared');
+        tempRoot = ctx.tempRoot;
+        try {
+          await Array.fromAsync(mergeChibanDataDuckdbCsv(
+            makeHubResult(mainUrl, '011002'), makeHubResult(posUrl, '011002'), ctx,
+          ));
+          // close 前: city-011002/ が残っている (shared モードの責務分担)
+          const entries = await fs.readdir(ctx.tempRoot);
+          assert.ok(entries.some((n) => n === 'city-011002'),
+            `expected city-011002 in ${ctx.tempRoot}, got: ${entries.join(', ')}`);
+        } finally {
+          await closeChibanDuckdbCtx(ctx);
+        }
+        // close 後: tempRoot 配下ごと消えている
+        await assert.rejects(() => fs.stat(tempRoot), /ENOENT/);
+      },
+    );
+  });
+});

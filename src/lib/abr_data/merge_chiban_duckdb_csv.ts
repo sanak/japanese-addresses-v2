@@ -156,7 +156,9 @@ function buildJoinSql(lg_code: string, hasPos: boolean): string {
  * mainHubResult / 任意 posHubResult を受け、ZIP を temp に展開して
  * DuckDB の LEFT JOIN 結果を 1 行ずつ yield する。
  *
- * Phase 1 では ctx.lifecycle='percity' のみサポート (instance を都度作成・破棄)。
+ * ctx.lifecycle が 'shared' のときは ctx.instance を使い回し、
+ * city-<lg_code>/ の cleanup は closeChibanDuckdbCtx に委ねる。
+ * 'percity' のときは 1 自治体ごとに instance を作成・破棄する。
  */
 export async function* mergeChibanDataDuckdbCsv(
   mainHubResult: HubSearchResult,
@@ -171,18 +173,33 @@ export async function* mergeChibanDataDuckdbCsv(
     cityRoot, mainHubResult, posHubResult,
   );
 
-  // Phase 1: percity モード固定 (shared は Phase 2 で実装)
-  const dbDir = path.join(ctx.tempRoot, `db-${lg_code}`);
-  await fs.mkdir(dbDir, { recursive: true });
-  const spillDir = path.join(dbDir, 'duckdb-spill');
-  await fs.mkdir(spillDir, { recursive: true });
+  // モード別に instance / dbDir を準備する
+  let perCityInstance: DuckDBInstance | undefined;
+  let perCityDbDir: string | undefined;
+  let instanceToUse: DuckDBInstance;
+  if (ctx.lifecycle === 'shared') {
+    if (!ctx.instance) {
+      throw new Error(`mergeChibanDataDuckdbCsv: shared ctx without instance (createChibanDuckdbCtx を main() 先頭で呼んでいない可能性)`);
+    }
+    instanceToUse = ctx.instance;
+  } else {
+    perCityDbDir = path.join(ctx.tempRoot, `db-${lg_code}`);
+    await fs.mkdir(perCityDbDir, { recursive: true });
+    const spillDir = path.join(perCityDbDir, 'duckdb-spill');
+    await fs.mkdir(spillDir, { recursive: true });
+    perCityInstance = await DuckDBInstance.create(path.join(perCityDbDir, 'db.duckdb'));
+    const setup = await perCityInstance.connect();
+    try {
+      await configureDuckdbConnection(setup, spillDir);
+    } finally {
+      setup.closeSync();
+    }
+    instanceToUse = perCityInstance;
+  }
 
-  let instance: DuckDBInstance | undefined;
   let connection: DuckDBConnection | undefined;
   try {
-    instance = await DuckDBInstance.create(path.join(dbDir, 'db.duckdb'));
-    connection = await instance.connect();
-    await configureDuckdbConnection(connection, spillDir);
+    connection = await instanceToUse.connect();
 
     const mainGlob = path.join(mainDir, '*.csv').replace(/'/g, "''");
     await connection.run(
@@ -210,13 +227,18 @@ export async function* mergeChibanDataDuckdbCsv(
       }
     } catch { /* ignore */ }
     try { connection?.closeSync(); } catch { /* ignore */ }
-    try { instance?.closeSync(); }   catch { /* ignore */ }
-    // percity: city CSV temp も dbDir もここで rm
-    await fs.rm(cityRoot, { recursive: true, force: true }).catch((e: unknown) => {
-      console.warn(`mergeChibanDataDuckdbCsv: cityRoot cleanup failed: ${cityRoot}`, e);
-    });
-    await fs.rm(dbDir, { recursive: true, force: true }).catch((e: unknown) => {
-      console.warn(`mergeChibanDataDuckdbCsv: dbDir cleanup failed: ${dbDir}`, e);
-    });
+    if (ctx.lifecycle === 'percity') {
+      try { perCityInstance?.closeSync(); } catch { /* ignore */ }
+      // percity: city CSV temp も dbDir もここで rm
+      await fs.rm(cityRoot, { recursive: true, force: true }).catch((e: unknown) => {
+        console.warn(`mergeChibanDataDuckdbCsv: cityRoot cleanup failed: ${cityRoot}`, e);
+      });
+      if (perCityDbDir) {
+        await fs.rm(perCityDbDir, { recursive: true, force: true }).catch((e: unknown) => {
+          console.warn(`mergeChibanDataDuckdbCsv: dbDir cleanup failed: ${perCityDbDir}`, e);
+        });
+      }
+    }
+    // shared: instance/cityRoot は closeChibanDuckdbCtx 側で一括 rm するので per-city finally では消さない
   }
 }
