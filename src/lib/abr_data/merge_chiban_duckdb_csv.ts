@@ -18,7 +18,6 @@ export interface ChibanDuckdbCtx {
 
 /**
  * 04_make_chiban の main() 先頭で 1 度呼ぶ。lifecycle に応じ instance を生成または空 ctx を返す。
- * Phase 1: percity のみサポート。shared は Phase 2 で実装。
  */
 export async function createChibanDuckdbCtx(
   lifecycle: ChibanDuckdbLifecycle,
@@ -28,13 +27,22 @@ export async function createChibanDuckdbCtx(
       `createChibanDuckdbCtx: unknown lifecycle "${String(lifecycle)}", expected 'shared' | 'percity'`,
     );
   }
-  if (lifecycle === 'shared') {
-    throw new Error(
-      `createChibanDuckdbCtx: shared lifecycle is not yet implemented (Phase 2)`,
-    );
-  }
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'chiban-duckdb-csv-'));
-  return { lifecycle, instance: undefined, tempRoot };
+  if (lifecycle === 'percity') {
+    return { lifecycle, instance: undefined, tempRoot };
+  }
+  // shared: 1 process で 1 instance を共有する
+  const dbPath = path.join(tempRoot, 'db.duckdb');
+  const spillDir = path.join(tempRoot, 'duckdb-spill');
+  await fs.mkdir(spillDir, { recursive: true });
+  const instance = await DuckDBInstance.create(dbPath);
+  const setup = await instance.connect();
+  try {
+    await configureDuckdbConnection(setup, spillDir);
+  } finally {
+    setup.closeSync();
+  }
+  return { lifecycle, instance, tempRoot };
 }
 
 /**

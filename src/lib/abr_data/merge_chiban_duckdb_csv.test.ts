@@ -38,11 +38,36 @@ await describe('createChibanDuckdbCtx (percity)', async () => {
     );
   });
 
-  await test('rejects shared lifecycle in Phase 1 (not yet implemented)', async () => {
-    await assert.rejects(
-      () => createChibanDuckdbCtx('shared'),
-      /shared.*not.*implemented|Phase 2/i,
-    );
+});
+
+await describe('createChibanDuckdbCtx (shared)', async () => {
+  await test('returns ctx with lifecycle=shared and live DuckDBInstance', async () => {
+    const ctx = await createChibanDuckdbCtx('shared');
+    try {
+      assert.strictEqual(ctx.lifecycle, 'shared');
+      assert.notStrictEqual(ctx.instance, undefined);
+      const stat = await fs.stat(ctx.tempRoot);
+      assert.ok(stat.isDirectory());
+      // instance が連結可能であることを軽量に確認
+      const conn = await ctx.instance!.connect();
+      try {
+        const r = await conn.run('SELECT 1 AS v');
+        const rows = await r.getRowObjects();
+        assert.strictEqual((rows[0] as { v: number | bigint }).v.toString(), '1');
+      } finally {
+        conn.closeSync();
+      }
+    } finally {
+      await closeChibanDuckdbCtx(ctx);
+    }
+  });
+
+  await test('closeChibanDuckdbCtx closes shared instance and removes tempRoot', async () => {
+    const ctx = await createChibanDuckdbCtx('shared');
+    const tempRoot = ctx.tempRoot;
+    await closeChibanDuckdbCtx(ctx);
+    assert.strictEqual(ctx.instance, undefined); // close 後は nulled out
+    await assert.rejects(() => fs.stat(tempRoot), /ENOENT/);
   });
 });
 
