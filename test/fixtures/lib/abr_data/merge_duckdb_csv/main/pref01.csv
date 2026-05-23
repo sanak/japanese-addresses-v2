@@ -1,0 +1,4 @@
+lg_code,machiaza_id,blk_id,rsdt_id,rsdt2_id,blk_num,rsdt_num,rsdt_num2,rsdt_addr_flg,rsdt_addr_mtd_code,basic_rsdt_div
+011002,0001000,01,001,,1,1,,0,1,1
+011002,0001000,01,002,,1,2,,0,1,1
+011002,0002000,02,001,,2,1,,1,1,1
