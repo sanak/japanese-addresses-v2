@@ -209,3 +209,76 @@ PoC 実装中に設計書 §4.4 が見落としていた 2 点を実コードで
 - startup cost (DuckDB instance 起動 + temp 展開 + view 作成) が小さなサンプルでは支配的
 - 実運用 (全国 47 都道府県) では北海道規模の改善が期待できる
 - 仮に小サンプルでも合格させたい場合は、worker pool で複数 pref を並列に流す等の別 task になる
+
+## Tier 3 PoC (duckdb-csv) for 04_make_chiban 追計測
+
+- 追計測日: 2026-05-24
+- ブランチ: `duckdb-tier3-poc-rsdt` (chiban PoC は 03 と同ブランチで継続)
+- 関連設計書: [`2026-05-23-duckdb-tier3-poc-chiban-design.md`](./2026-05-23-duckdb-tier3-poc-chiban-design.md)
+- 関連計画書 (3 分割):
+  - Phase 1: [`2026-05-23-duckdb-tier3-poc-chiban-01-foundation.md`](../plans/2026-05-23-duckdb-tier3-poc-chiban-01-foundation.md)
+  - Phase 2: [`2026-05-23-duckdb-tier3-poc-chiban-02-shared-and-caller.md`](../plans/2026-05-23-duckdb-tier3-poc-chiban-02-shared-and-caller.md)
+  - Phase 3: [`2026-05-23-duckdb-tier3-poc-chiban-03-verification-and-bench.md`](../plans/2026-05-23-duckdb-tier3-poc-chiban-03-verification-and-bench.md)
+- 反復: 1 回 (3 反復中央値は別途検討)
+- 計測対象: `04_make_chiban` のみ
+- 計測ツール: `/usr/bin/time -l npm run run:04_make_chiban`
+- 比較対象: baseline = 現状 default の Map fast-path (`mergeDataLeftJoin(..., memory=true)`)
+
+### wall time (秒) — 04_make_chiban のみ
+
+| 都道府県 | baseline (Map) | duckdb-csv-percity | duckdb-csv-shared | percity の対 Map 比 | shared の対 Map 比 |
+|---------|----------------|--------------------|---------------------|---------------------|---------------------|
+| 京都府   | 43.62          | 26.92              | 26.65               | **-38.3%**          | **-38.9%**          |
+| 北海道   | 158.41         | 70.19              | 69.37               | **-55.7%**          | **-56.2%**          |
+
+### peak RSS (MB) — 04_make_chiban のみ
+
+| 都道府県 | baseline (Map) | duckdb-csv-percity | duckdb-csv-shared | percity の対 Map 比 (MB) | shared の対 Map 比 (MB) |
+|---------|----------------|--------------------|---------------------|--------------------------|--------------------------|
+| 京都府   | 1434.3         | 2360.9             | 2066.7              | +926.6                   | +632.4                   |
+| 北海道   | 1660.7         | 2251.5             | 2280.7              | +590.8                   | +620.0                   |
+
+### 出力同一性 (baseline vs duckdb-csv-*)
+
+- 京都府 percity: **差分あり (許容)** — 福知山市-地番.txt の 1 行のみ順序差 (差分 1 / 36 ファイル中)
+- 京都府 shared:  **差分あり (許容)** — 同上
+- 北海道 percity: **完全一致** (差分 0 / 188 ファイル中)
+- 北海道 shared:  **完全一致** (差分 0 / 188 ファイル中)
+
+京都府の差分は計画書 Task 9 step 5 で予言された collation 差で、`（耕）377,1,...` (全角丸括弧プレフィックス) と `377,1,...` (数字直接) の ORDER BY 順序が Map fast-path と DuckDB で逆になる現象。データ内容は同一 (同じ key, 同じ rep_lon/rep_lat) で、03 PoC bench-results.md §「重要な発見 2」と同質の workload-size 非依存な collation 差。
+
+### lifecycle 選定 (PoC 判定軸 1)
+
+判定基準: `shared` vs `percity` を直接比較し、wall time が短い側を「`CHIBAN_DUCKDB_LIFECYCLE` 未指定時のデフォルト推奨」として確定する。RSS が大幅劣化 (例: +50% 以上) する側は不採用候補。
+
+- 京都府: **shared 推奨** (wall 差 -1.0%, RSS 差 -294.2 MB) — shared が RSS でも大幅優位
+- 北海道: **shared 推奨** (wall 差 -1.2%, RSS 差 +29.2 MB) — wall は shared、RSS はほぼ同等
+
+→ 設計書 §2 の `CHIBAN_DUCKDB_LIFECYCLE` 行を **`shared`** に更新する別コミットを起案。両県で wall が shared 優位、京都府では RSS も -294MB と大幅優位、北海道では RSS 同等。percity は env で opt-in 維持。
+
+### Map 比昇格判断 (PoC 判定軸 2)
+
+判定基準: 勝った lifecycle (shared) で baseline (Map fast-path) 比 **wall time -20% 以上 かつ peak RSS 同等以下**
+
+- 京都府: **wall 合格 / RSS 不合格** — shared で wall -38.9% (合格), RSS +632.4 MB (+44%, 不合格)
+- 北海道: **wall 合格 / RSS 不合格** — shared で wall -56.2% (合格), RSS +620.0 MB (+37%, 不合格)
+
+総合判定としては「2 軸 AND の RSS 軸不合格」だが、これは Map fast-path が in-memory hash table を採用しているのに対し、DuckDB は parser/binder/optimizer/spill buffer 等のランタイムを抱える構造的差分 (~600 MB) によるもの。Node.js heap limit (8 GB) に対する余裕は十分で、実運用上の阻害要因にはならない。一方 wall は両県で 30-50% 短縮しており、大規模都道府県ほど効果が拡大する 03 PoC と同じトレンドが見える。
+
+### 所感と次のアクション
+
+合格 (北海道 wall) のフォローアップ:
+
+- **昇格 PR (条件付き)**: wall -56% という改善幅は大きく、RSS +620 MB は許容範囲なので、`MERGE_BACKEND=duckdb-csv` + `CHIBAN_DUCKDB_LIFECYCLE=shared` を 04 のデフォルトに昇格する PR を起案する価値あり。判定基準を厳格適用すると「RSS 軸不合格」だが、設計書 §6.3 の判定基準自体を「Map 比 RSS 同等以下」→「Map 比 RSS +50% 以内」など現実的な閾値に緩和することも別タスクで検討
+- **02 への横展開**: 02_make_machi_aza にも同じパターン (read_csv_auto + per-city or shared) を適用する Tier 3 拡張は別タスクで設計
+- **汎用化リファクタ**: 03 と 04 で重複する DuckDB セッション初期化 / view 命名 / temp 管理 (`configureDuckdbConnection` 等は既に共有) を `merge_duckdb_csv_common.ts` への抽出は昇格 PR と切り離して別タスク
+- **3 反復中央値**: 現在は 1 反復値。Map fast-path との差が十分大きい (北海道で 88 秒短縮) ので 1 反復でも結論は変わらないが、PR の根拠強化のために 3 反復計測を別途実施
+
+### 設計書からの差分 (実装中に発見した spec gap)
+
+PoC 実装中に設計書 §4.4 / §5 が見落としていた 2 点を実コードで補修 (Phase 3 verification 中に検出、独立 repair commit で対応):
+
+1. **URL からの lg_code 抽出正規表現**: 設計書 §5 と Phase 1 Task 3 で `/(\d{6})_csv_zip$/` を想定していたが、本番 ABR Hub の CSV URL は `https://data.address-br.digital.go.jp/mt_parcel/city/mt_parcel_city<6桁>.csv.zip` 形式。`/_city(\d{6})\.csv\.zip$/` に修正、テスト URL も実形式に更新 (commit `b042eb4`)
+2. **pos CSV の duplicate key 行**: 設計書 §4.4 は単純な LEFT JOIN を想定していたが、本番 parcel_pos CSV は同一 `(lg_code, machiaza_id, prc_id)` で完全 identical な行が複数含まれる (北海道全 188 自治体スキャンで 34 万行)。一方 Map fast-path の `rightMap.set(key, data)` は last-writer-wins で 1 行に潰すため、SQL LEFT JOIN だと N 倍展開されてしまい byte-exact 不一致。pos 側を `QUALIFY ROW_NUMBER() OVER (PARTITION BY join_keys) = 1` で 1 行に dedup する SQL に変更 (commit `c9d09c8`)
+
+main 側 (parcel CSV) には key 重複が無いこと、pos 側の重複は全列完全 identical で `prc_id2`/`prc_id3` 的な追加 key は不要であることを、北海道全域の実 CSV スキャンで verify 済み。
