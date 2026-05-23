@@ -37,7 +37,7 @@
 |------|------|------|
 | 処理粒度 | **per-city** | caller (`processCity`) の構造変更が最小。Hub item 単位とも一致 |
 | API 形態 | **新規モジュール `merge_chiban_duckdb_csv.ts` 追加・既存維持** | 03 の `merge_duckdb_csv.ts` を**触らない**ことで 03 PoC のベンチ再現性を保護 |
-| DuckDB ライフサイクル | **`shared` と `percity` の 2 モードを両方実装、PoC で計測して推奨を決定** | per-city は ~1887 回の instance 起動コスト、shared は view 命名と concurrency 設計のコストがあり、机上で勝者が決められない |
+| DuckDB ライフサイクル | **`shared` をデフォルト推奨、`percity` は env で opt-in** | PoC 実測 (bench-results.md §「Tier 3 PoC for 04_make_chiban 追計測」) で京都府・北海道とも shared が wall 優位 (-1.0% / -1.2%) かつ RSS は京都府で -294 MB 大幅優位 / 北海道で +29 MB 同等。両モードを残しつつ shared を default に確定 |
 | view 名衝突回避 | **`l_<lg_code>` / `r_<lg_code>`** (lg_code は ABR の `[0-9]+` 仕様) | デバッグ可読性 (view 名から自治体が即特定可能)、EXPLAIN ANALYZE 出力の再現性、ランダム性除去 |
 | JOIN キー | **`lg_code, machiaza_id, prc_id`** (3 列) | 現状の Map fast-path (`mergeDataLeftJoin(..., ['lg_code', 'machiaza_id', 'prc_id'], true)`) と完全一致 |
 | NULL-safe JOIN | **`IS NOT DISTINCT FROM`** | CSV 空フィールドが NULL になる ABR データに対する防御 (03 PoC §4.4 実装中発見) |
