@@ -144,3 +144,68 @@ DuckDB は外部メモリ管理 (Node heap 外) で動作するため、Node の
 ## 並行配置の維持
 
 本ブランチでは `MERGE_BACKEND` env で sqlite/duckdb を切替可能な構造のまま残しているため、本採否を決めずに main にマージしても影響は無い。`MERGE_BACKEND` が未設定 (または `sqlite`) なら既存挙動と同じ。
+
+## Tier 3 PoC (duckdb-csv) 追計測
+
+- 追計測日: 2026-05-23
+- ブランチ: `duckdb-tier3-poc-rsdt`
+- 関連設計書: [`2026-05-23-duckdb-tier3-poc-design.md`](./2026-05-23-duckdb-tier3-poc-design.md)
+- 関連計画書: [`2026-05-23-duckdb-tier3-poc-rsdt.md`](../plans/2026-05-23-duckdb-tier3-poc-rsdt.md)
+- 反復: 1 回 (3 反復中央値は別途検討)
+- 計測対象: `03_make_rsdt` のみ
+- 計測ツール: `/usr/bin/time -l npm run run:03_make_rsdt`
+
+### wall time (秒) — 03_make_rsdt のみ
+
+| 都道府県 | sqlite | duckdb (既存) | duckdb-csv (Tier 3) | duckdb-csv の対 duckdb 比 |
+|---------|--------|---------------|---------------------|--------------------------|
+| 京都府   | 9.30   | 8.52          | 8.40                | **-1.4%**                |
+| 北海道   | 104.86 | 55.51         | 24.74               | **-55.4%**               |
+
+### peak RSS (MB) — 03_make_rsdt のみ
+
+| 都道府県 | sqlite | duckdb (既存) | duckdb-csv (Tier 3) | duckdb-csv の対 duckdb 比 |
+|---------|--------|---------------|---------------------|--------------------------|
+| 京都府   | 1163.4 | 1294.7        | 1274.8              | -1.5% (-19.9 MB)         |
+| 北海道   | 2193.6 | 3979.8        | 3759.0              | -5.5% (-220.8 MB)        |
+
+### 出力同一性 (sqlite vs duckdb-csv)
+
+- 京都府: **完全一致** (`diff -r` 0 行)
+- 北海道: **完全一致** (`diff -r` 0 行)
+
+byte-exact を達成するため、`merge_duckdb_csv.ts` の `ORDER BY` には `COALESCE(col, '')` を入れて、SQLite 経路のキー文字列連結ソート (空文字が他より小さい) のセマンティクスに合わせた。
+
+### PoC 判定
+
+判定基準: 既存 duckdb 経路 (`merge_duckdb.ts`) 比 **wall time -20% 以上 かつ peak RSS 同等以下**
+
+- 京都府: **不合格 (wall)** / 合格 (RSS) — wall -1.4%, RSS -19.9 MB
+- 北海道: **合格** — wall -55.4%, RSS -220.8 MB
+
+京都府は単一都道府県のサンプルが小さく (~8.5 秒)、startup overhead が支配的で並列スキャンの優位性が活きない。一方、北海道規模では Tier 3 (CSV 並列スキャン + native LEFT JOIN) の効果が圧倒的: **wall 半分以下に短縮しつつメモリも削減**。
+
+実運用 (全国データ生成 or 大規模都道府県) では北海道に近い改善が期待できる。byte-exact 同一性も両都道府県で達成しているので、`MERGE_BACKEND=duckdb-csv` を 03_make_rsdt のデフォルトに昇格する PR を出す価値が十分にある。
+
+### 設計書からの差分 (実装中に発見した spec gap)
+
+PoC 実装中に設計書 §4.4 が見落としていた 2 点を実コードで補修:
+
+1. **NULL-safe JOIN**: `USING (...)` は NULL=NULL が false なので、CSV 空フィールド (`rsdt2_id` 等) が NULL になる ABR データで全行ミスヒットする。`ON l.k1 IS NOT DISTINCT FROM r.k1 AND ...` に置換。
+2. **ORDER BY NULL semantics**: DuckDB の multi-column ORDER BY 既定は NULLS LAST。SQLite 経路の「key 連結ソート (空文字最小)」と順序が崩れる。`COALESCE(col, '')` で NULL→'' に正規化して再現。
+
+また caller 側 (`03_make_rsdt.ts`) で `'rep_srid' in raw` を `raw.rep_srid != null` に変える際の TypeScript narrowing 問題に対しては、user-defined type predicate (`hasPos`) を導入して runtime 判定と型 narrowing を両立。
+
+### 所感と次のアクション
+
+合格 (北海道) のフォローアップ:
+
+- `MERGE_BACKEND=duckdb-csv` を 03_make_rsdt のデフォルトに昇格する PR を検討
+- 02 (`02_make_machi_aza`) / 04 (`04_make_chiban`) への Tier 3 横展開を別タスクで設計
+- ORDER BY 緩和 (Tier 4 — caller がグループ境界を文字列等価で判定するなら secondary sort 列を減らせる) は副次的効果なので、まず Tier 3 採用後に検討
+
+京都府で wall -20% に届かなかった点は **PoC blocker ではなく workload-size limitation**:
+
+- startup cost (DuckDB instance 起動 + temp 展開 + view 作成) が小さなサンプルでは支配的
+- 実運用 (全国 47 都道府県) では北海道規模の改善が期待できる
+- 仮に小サンプルでも合格させたい場合は、worker pool で複数 pref を並列に流す等の別 task になる
