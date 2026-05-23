@@ -54,9 +54,12 @@ export async function *mergeDataLeftJoinDuckdb<T, U>(
     // Use connection.stream() which returns a DuckDBResult supporting streaming.
     // yieldRowObjects() is an AsyncIterableIterator that yields Record<string, DuckDBValue>[]
     // (one array of row-objects per fetched chunk), so we iterate chunks then rows.
+    // ORDER BY l.key is required for callers that assume rows arrive grouped by lg_code
+    // (see merge_sqlite.ts for the same reasoning).
     const result = await connection.stream(`
       SELECT json_merge_patch(l.data, COALESCE(r.data, '{}'::JSON)) AS d01
       FROM l LEFT JOIN r ON l.key = r.key
+      ORDER BY l.key
     `);
     for await (const rowObjects of result.yieldRowObjects()) {
       for (const row of rowObjects) {

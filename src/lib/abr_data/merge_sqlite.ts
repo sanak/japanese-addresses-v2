@@ -54,12 +54,17 @@ export async function *mergeDataLeftJoinSqlite<T, U>(left: AsyncIterableIterator
       CREATE INDEX r_key ON r(key);
     `);
 
+    // ORDER BY l.key is required: callers (02_make_machi_aza, 03_make_rsdt, 04_make_chiban)
+    // assume rows arrive grouped by lg_code and flush per-city output on lg_code change.
+    // Without ORDER BY, DuckDB's HASH JOIN returns rows in indeterminate order, causing
+    // partial per-city files to overwrite each other.
     const select = db.prepare<void[], {d01: string, d02: string}>(`
       SELECT
         json_patch(l.data, coalesce(r.data, '{}')) AS d01
       FROM
         l
         LEFT JOIN r ON l.key = r.key
+      ORDER BY l.key
     `);
     for (const data of select.iterate()) {
       yield JSON.parse(data.d01);
