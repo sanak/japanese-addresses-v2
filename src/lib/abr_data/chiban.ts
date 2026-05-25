@@ -81,3 +81,5 @@ export type ChibanPosData = {
   /// 法務省地図_筆id
   moj_map_brushid: string;
 };
+
+export type ChibanDataWithPos = ChibanData | ChibanData & ChibanPosData;

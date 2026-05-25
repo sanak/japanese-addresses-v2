@@ -37,6 +37,7 @@
     "dist/**/*"
   ],
   "devDependencies": {
+    "@duckdb/node-api": "^1.5.3-r.1",
     "@eslint/js": "^9.17.0",
     "@geolonia/japanese-numeral": "^1.0.2",
     "@tsconfig/node22": "^22.0.0",

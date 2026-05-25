@@ -1,7 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getHubItemsByQuery, combineCSVParserIterators, CSVParserIterator, findResultByTypeAndArea, getAndParseCSVDataForId, getAndStreamCSVDataForId } from '../lib/hub.js';
-import { mergeRsdtdspRsdtData, RsdtdspRsdtData, RsdtdspRsdtPosData } from '../lib/abr_data/rsdtdsp_rsdt.js';
+import { mergeRsdtdspRsdtData, RsdtdspRsdtData, RsdtdspRsdtPosData, RsdtdspRsdtDataWithPos } from '../lib/abr_data/rsdtdsp_rsdt.js';
+import { mergeRsdtdspRsdtDataDuckdbCsv } from '../lib/abr_data/merge_duckdb_csv.js';
+import type { HubSearchResult } from '../lib/hub.js';
 import { machiAzaName, RsdtApi, SingleRsdt } from '../data.js';
 import { projectABRData } from '../lib/proj.js';
 import { MachiAzaData } from '../lib/abr_data/machi_aza.js';
@@ -11,6 +13,12 @@ import { prefectureNameCodes } from '../lib/prefecture_name_codes.js';
 
 const HEADER_CHUNK_SIZE = 50_000;
 // const HEADER_PBF_CHUNK_SIZE = 8_192;
+
+// DuckDB LEFT JOIN は全カラムを持つ row を返し、欠損は値レベルで null になる。
+// in 演算子では narrow できないので、rep_srid の null/undefined を見て判定する。
+function hasPos(raw: RsdtdspRsdtDataWithPos): raw is RsdtdspRsdtData & RsdtdspRsdtPosData {
+  return (raw as Partial<RsdtdspRsdtPosData>).rep_srid != null;
+}
 
 function getOutPath(ma: MachiAzaData) {
   return path.join(
@@ -28,12 +36,14 @@ type HeaderRow = {
 function serializeApiDataTxt(apiData: RsdtApi): { headerIterations: number, headerData: HeaderRow[], data: Buffer } {
   const outSections: Buffer[] = [];
   for ( const { machiAza, rsdts } of apiData ) {
-    let outSection = `住居表示,${machiAzaName(machiAza)}\n` +
-                     `blk_num,rsdt_num,rsdt_num2,lng,lat\n`;
+    const lines: string[] = [
+      `住居表示,${machiAzaName(machiAza)}`,
+      `blk_num,rsdt_num,rsdt_num2,lng,lat`,
+    ];
     for (const rsdt of rsdts) {
-      outSection += `${rsdt.blk_num || ''},${rsdt.rsdt_num},${rsdt.rsdt_num2 || ''},${rsdt.point?.[0] || ''},${rsdt.point?.[1] || ''}\n`;
+      lines.push(`${rsdt.blk_num || ''},${rsdt.rsdt_num},${rsdt.rsdt_num2 || ''},${rsdt.point?.[0] || ''},${rsdt.point?.[1] || ''}`);
     }
-    outSections.push(Buffer.from(outSection, 'utf8'));
+    outSections.push(Buffer.from(lines.join('\n') + '\n', 'utf8'));
   }
 
   const createHeader = (iterations = 1) => {
@@ -172,24 +182,33 @@ async function main(argv: string[]) {
 
   const mainStreams: CSVParserIterator<RsdtdspRsdtData>[] = [];
   const posStreams: CSVParserIterator<RsdtdspRsdtPosData>[] = [];
+  const mainHubResults: HubSearchResult[] = [];
+  const posHubResults: HubSearchResult[] = [];
   for (const pref of prefs) {
     const mainResults = await getHubItemsByQuery('住居表示-住居マスター', '都道府県レベル', pref);
     const main = findResultByTypeAndArea(mainResults.features, '住居表示-住居マスター', pref);
     if (!main) {
       throw new Error(`「${pref} 住居表示-住居マスター」データセットが見つかりませんでした`);
     }
+    mainHubResults.push(main);
     mainStreams.push(getAndStreamCSVDataForId<RsdtdspRsdtData>(main.properties.id));
 
     const pos = findResultByTypeAndArea(mainResults.features, '住居表示-住居マスター位置参照拡張', pref);
     if (!pos) {
       throw new Error(`「${pref} 住居表示-住居マスター位置参照拡張」データセットが見つかりませんでした`);
     }
+    posHubResults.push(pos);
     posStreams.push(getAndStreamCSVDataForId<RsdtdspRsdtPosData>(pos.properties.id));
   }
-  const mainStream: CSVParserIterator<RsdtdspRsdtData> = combineCSVParserIterators(...mainStreams);
-  const posStream: CSVParserIterator<RsdtdspRsdtPosData> = combineCSVParserIterators(...posStreams);
 
-  const rawData = mergeRsdtdspRsdtData(mainStream, posStream);
+  let rawData: AsyncIterableIterator<RsdtdspRsdtDataWithPos>;
+  if (process.env.MERGE_BACKEND === 'duckdb-csv') {
+    rawData = mergeRsdtdspRsdtDataDuckdbCsv(mainHubResults, posHubResults);
+  } else {
+    const mainStream: CSVParserIterator<RsdtdspRsdtData> = combineCSVParserIterators(...mainStreams);
+    const posStream: CSVParserIterator<RsdtdspRsdtPosData> = combineCSVParserIterators(...posStreams);
+    rawData = mergeRsdtdspRsdtData(mainStream, posStream);
+  }
 
   let lastOutPath: string | undefined = undefined;
 
@@ -227,7 +246,7 @@ async function main(argv: string[]) {
       blk_num: raw.blk_num === '' ? undefined : raw.blk_num,
       rsdt_num: raw.rsdt_num,
       rsdt_num2: raw.rsdt_num2 === '' ? undefined : raw.rsdt_num2,
-      point: 'rep_srid' in raw ? projectABRData(raw) : undefined,
+      point: hasPos(raw) ? projectABRData(raw) : undefined,
     });
   }
   if (currentMachiAza && currentRsdtList.length > 0) {
